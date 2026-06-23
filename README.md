@@ -59,6 +59,37 @@ dotnet run
   consolidated with `StreamToEndAsync()`.
 - **JSON:** queue messages use `System.Text.Json` source generation (`AppJsonContext`) — trim/AOT friendly.
 
+## Observability (Elastic APM)
+
+Each consumed message becomes an APM **transaction** (`process-message`, type `messaging`). The
+Ollama call is a child **span** (`ollama generate`), and the outgoing HTTP request is auto-captured
+via `HttpDiagnosticsSubscriber`. Request/response content is traced as labels:
+
+| Where       | Label                | Value                                  |
+|-------------|----------------------|----------------------------------------|
+| transaction | `message.id`         | message id                             |
+| transaction | `ollama.model`       | configured model                       |
+| transaction | `ollama.temperature` | requested temperature                  |
+| transaction | `request.text`       | prompt (truncated to 1000 chars)       |
+| transaction | `request.system`     | system prompt, if provided (truncated) |
+| span        | `response.text`      | generated text (truncated to 1000)     |
+| span        | `response.length`    | full response length                   |
+
+Failures call `CaptureException` and mark the transaction outcome as failed.
+
+Configure via the `ElasticApm` section (or `ELASTIC_APM_*` env vars):
+
+```jsonc
+"ElasticApm": {
+  "ServiceName": "ollama-backend-client",
+  "Environment": "production",
+  "ServerUrl": "http://localhost:8200",
+  "SecretToken": "",
+  "TransactionSampleRate": 1.0,
+  "Enabled": true        // set false to disable the agent entirely
+}
+```
+
 ## Send a test message
 
 From the RabbitMQ management UI (http://localhost:15672, guest/guest), publish to the

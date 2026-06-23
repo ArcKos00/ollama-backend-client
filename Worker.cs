@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Elastic.Apm;
+using Elastic.Apm.Api;
 using Microsoft.Extensions.Options;
 using OllamaProcessor.Configuration;
 using OllamaProcessor.Models;
@@ -16,6 +18,8 @@ public sealed class Worker(
     IOptions<OllamaOptions> ollamaOptions,
     ILogger<Worker> logger) : BackgroundService
 {
+    private const int MaxTraceTextLength = 1000;
+
     private readonly RabbitMqOptions _rabbit = rabbitOptions.Value;
     private readonly OllamaOptions _ollama = ollamaOptions.Value;
     private IChannel? _channel;
@@ -77,41 +81,69 @@ public sealed class Worker(
             return;
         }
 
-        try
+        var msg = message; // non-null past the guard; captured by the trace delegate
+
+        // One APM transaction per message; the Ollama call is a child span that carries
+        // the request prompt and the generated response for end-to-end tracing.
+        await Agent.Tracer.CaptureTransaction("process-message", "messaging", async transaction =>
         {
-            logger.LogInformation("Processing id={Id}", message.Id);
-
-            var generation = await ollama.GenerateAsync(
-                message.Text, message.Temperature, message.System, CancellationToken.None);
-
-            var result = new ResultMessage(
-                Id: message.Id,
-                Response: generation.Response ?? string.Empty,
-                Model: generation.Model ?? _ollama.Model);
-
-            await publisher.PublishAsync(result, CancellationToken.None);
-            await channel.BasicAckAsync(deliveryTag, multiple: false);
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Failed to process id={Id}; publishing error result", message.Id);
-
-            // Surface the failure to the caller's reply queue, then ack so it doesn't loop.
-            var errorResult = new ResultMessage(
-                Id: message.Id, Response: string.Empty, Model: _ollama.Model, Error: ex.Message);
+            transaction.SetLabel("message.id", msg.Id);
+            transaction.SetLabel("ollama.model", _ollama.Model);
+            transaction.SetLabel("ollama.temperature", msg.Temperature);
+            transaction.SetLabel("request.text", Truncate(msg.Text));
+            if (!string.IsNullOrEmpty(msg.System))
+                transaction.SetLabel("request.system", Truncate(msg.System));
 
             try
             {
-                await publisher.PublishAsync(errorResult, CancellationToken.None);
+                logger.LogInformation("Processing id={Id}", msg.Id);
+
+                var generation = await transaction.CaptureSpan(
+                    "ollama generate", "external",
+                    async span =>
+                    {
+                        var g = await ollama.GenerateAsync(
+                            msg.Text, msg.Temperature, msg.System, CancellationToken.None);
+                        span.SetLabel("response.text", Truncate(g.Response));
+                        span.SetLabel("response.length", g.Response.Length);
+                        return g;
+                    },
+                    subType: "ollama", action: "generate");
+
+                var result = new ResultMessage(
+                    Id: msg.Id,
+                    Response: generation.Response ?? string.Empty,
+                    Model: generation.Model ?? _ollama.Model);
+
+                await publisher.PublishAsync(result, CancellationToken.None);
                 await channel.BasicAckAsync(deliveryTag, multiple: false);
             }
-            catch (Exception publishEx)
+            catch (Exception ex)
             {
-                logger.LogError(publishEx, "Could not publish error result for id={Id}; requeueing", message.Id);
-                await channel.BasicNackAsync(deliveryTag, multiple: false, requeue: true);
+                transaction.CaptureException(ex);
+                transaction.Outcome = Outcome.Failure;
+                logger.LogError(ex, "Failed to process id={Id}; publishing error result", msg.Id);
+
+                // Surface the failure to the caller's reply queue, then ack so it doesn't loop.
+                var errorResult = new ResultMessage(
+                    Id: msg.Id, Response: string.Empty, Model: _ollama.Model, Error: ex.Message);
+
+                try
+                {
+                    await publisher.PublishAsync(errorResult, CancellationToken.None);
+                    await channel.BasicAckAsync(deliveryTag, multiple: false);
+                }
+                catch (Exception publishEx)
+                {
+                    logger.LogError(publishEx, "Could not publish error result for id={Id}; requeueing", msg.Id);
+                    await channel.BasicNackAsync(deliveryTag, multiple: false, requeue: true);
+                }
             }
-        }
+        });
     }
+
+    private static string Truncate(string value) =>
+        value.Length <= MaxTraceTextLength ? value : value[..MaxTraceTextLength];
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {

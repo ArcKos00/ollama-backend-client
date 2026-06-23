@@ -1,3 +1,4 @@
+using Elastic.Apm.DiagnosticSource;
 using Microsoft.Extensions.Options;
 using OllamaProcessor;
 using OllamaProcessor.Configuration;
@@ -5,6 +6,10 @@ using OllamaProcessor.Services;
 using OllamaSharp;
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// Elastic APM: reads the "ElasticApm" config section (or ELASTIC_APM_* env vars).
+// HttpDiagnosticsSubscriber auto-captures the outgoing Ollama HTTP call as a span.
+builder.Services.AddElasticApm(new HttpDiagnosticsSubscriber());
 
 builder.Services
     .AddOptions<RabbitMqOptions>()
