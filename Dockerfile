@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.nuget/packages \
     --no-restore -p:UseAppHost=false
 
 # ---- Runtime stage ----
-FROM 10.20.50.25:8081/dotnet/runtime:10.0 AS final
+FROM 10.20.50.25:8081/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 
 # Run as the non-root user shipped in the .NET images.
