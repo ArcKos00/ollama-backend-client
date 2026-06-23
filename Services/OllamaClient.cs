@@ -8,7 +8,8 @@ public sealed record OllamaResult(string Response, string Model);
 
 /// <summary>
 /// Wraps OllamaSharp's <see cref="IOllamaApiClient"/>. The model is the client's
-/// configured <c>SelectedModel</c>; we stream and consolidate into one result.
+/// configured <c>SelectedModel</c>. We don't emit partial tokens, so we request a
+/// single (non-streamed) response and read it directly.
 /// </summary>
 public sealed class OllamaClient(IOllamaApiClient client, ILogger<OllamaClient> logger)
 {
@@ -20,16 +21,19 @@ public sealed class OllamaClient(IOllamaApiClient client, ILogger<OllamaClient> 
             Model = client.SelectedModel,
             Prompt = prompt,
             System = system,
-            Stream = true,
+            Stream = false,
             Options = new RequestOptions { Temperature = (float)temperature },
         };
 
-        logger.LogDebug(
-            "Generating via Ollama (model={Model}, temperature={Temp}, hasSystem={HasSystem}, promptLength={Len})",
+        logger.LogInformation(
+            "Ollama generate starting (model={Model}, temperature={Temp}, hasSystem={HasSystem}, promptLength={Len})",
             client.SelectedModel, temperature, system is not null, prompt.Length);
 
-        // Stream the chunks and consolidate them into a single done-response.
+        // Non-streamed: a single response chunk is returned when generation completes.
         var final = await client.GenerateAsync(request, cancellationToken).StreamToEndAsync();
+
+        logger.LogInformation("Ollama generate finished (responseLength={Len})",
+            final?.Response?.Length ?? 0);
 
         return new OllamaResult(
             Response: final?.Response ?? string.Empty,
