@@ -4,14 +4,24 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-# Restore first (cached unless the project file changes).
+# Quieter, faster, fewer network round-trips during restore.
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+    NUGET_XMLDOC_MODE=skip
+
+# Restore first (cached unless the project file changes). A BuildKit cache mount keeps
+# the NuGet package cache across builds, and NuGetAudit=false drops the vulnerability
+# endpoint round-trip that can stall restore on locked-down networks.
 COPY OllamaProcessor.csproj ./
-RUN dotnet restore OllamaProcessor.csproj
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet restore OllamaProcessor.csproj -p:NuGetAudit=false
 
 # Build & publish.
 COPY . .
-RUN dotnet publish OllamaProcessor.csproj -c Release -o /app/publish \
-    /p:UseAppHost=false
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet publish OllamaProcessor.csproj -c Release -o /app/publish \
+    --no-restore -p:UseAppHost=false
 
 # ---- Runtime stage ----
 FROM mcr.microsoft.com/dotnet/runtime:10.0 AS final
