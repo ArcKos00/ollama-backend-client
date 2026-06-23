@@ -2,10 +2,16 @@ using System.Text.Json.Serialization;
 
 namespace OllamaProcessor.Models;
 
-/// <summary>Incoming work item read from the request queue: {"id":..., "text":...}.</summary>
+/// <summary>
+/// Incoming work item read from the request queue:
+/// {"id":..., "text":..., "temperature":..., "system":...}.
+/// <c>temperature</c> and <c>system</c> are optional; absent values use the defaults below.
+/// </summary>
 public sealed record IncomingMessage(
     [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("text")] string Text);
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("temperature")] double Temperature = 1.0,
+    [property: JsonPropertyName("system")] string? System = null);
 
 /// <summary>Result published to the per-message reply queue (queue name == message id).</summary>
 public sealed record ResultMessage(

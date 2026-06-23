@@ -65,7 +65,14 @@ From the RabbitMQ management UI (http://localhost:15672, guest/guest), publish t
 `ollama-requests` queue with payload:
 
 ```json
-{ "id": "demo-1", "text": "Say hello in one short sentence." }
+{
+  "id": "demo-1",
+  "text": "Say hello in one short sentence.",
+  "temperature": 1.0,
+  "system": "You are a terse assistant."
+}
 ```
+
+`temperature` (default `1.0`) and `system` are optional — omit them to use the defaults.
 
 Then watch the `demo-1` queue — the response appears there.

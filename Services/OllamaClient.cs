@@ -12,17 +12,21 @@ public sealed record OllamaResult(string Response, string Model);
 /// </summary>
 public sealed class OllamaClient(IOllamaApiClient client, ILogger<OllamaClient> logger)
 {
-    public async Task<OllamaResult> GenerateAsync(string prompt, CancellationToken cancellationToken)
+    public async Task<OllamaResult> GenerateAsync(
+        string prompt, double temperature, string? system, CancellationToken cancellationToken)
     {
         var request = new GenerateRequest
         {
             Model = client.SelectedModel,
             Prompt = prompt,
+            System = system,
             Stream = true,
+            Options = new RequestOptions { Temperature = (float)temperature },
         };
 
-        logger.LogDebug("Generating via Ollama (model={Model}, promptLength={Len})",
-            client.SelectedModel, prompt.Length);
+        logger.LogDebug(
+            "Generating via Ollama (model={Model}, temperature={Temp}, hasSystem={HasSystem}, promptLength={Len})",
+            client.SelectedModel, temperature, system is not null, prompt.Length);
 
         // Stream the chunks and consolidate them into a single done-response.
         var final = await client.GenerateAsync(request, cancellationToken).StreamToEndAsync();

@@ -1,0 +1,22 @@
+# Build artifacts
+**/bin/
+**/obj/
+artifacts/
+
+# VCS / IDE / tooling
+.git/
+.gitignore
+.vs/
+.idea/
+.vscode/
+.claude/
+
+# Local secrets — never bake into the image
+appsettings.Development.json
+appsettings.*.Local.json
+**/*.user
+
+# Docs / misc
+README.md
+Dockerfile
+.dockerignore

@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using OllamaProcessor.Configuration;
@@ -82,7 +81,8 @@ public sealed class Worker(
         {
             logger.LogInformation("Processing id={Id}", message.Id);
 
-            var generation = await ollama.GenerateAsync(message.Text, CancellationToken.None);
+            var generation = await ollama.GenerateAsync(
+                message.Text, message.Temperature, message.System, CancellationToken.None);
 
             var result = new ResultMessage(
                 Id: message.Id,
