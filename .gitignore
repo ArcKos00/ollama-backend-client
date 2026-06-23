@@ -1,0 +1,21 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+
+# Local secrets / environment-specific config (never commit)
+appsettings.Development.json
+appsettings.*.Local.json
+*.user
+
+# IDE / tooling
+.vs/
+.idea/
+.vscode/
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
