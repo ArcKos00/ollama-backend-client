@@ -1,0 +1,64 @@
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    volumes:
+      - ollama:/root/.ollama
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  ollama-model-puller:
+    image: curlimages/curl:latest
+    container_name: ollama-model-puller
+    depends_on:
+      - ollama
+    restart: "no"
+    # Чекаємо 10 секунд, щоб ollama точно встигла піднятися, 
+    # потім робимо запит на завантаження моделі
+    command: >
+      sh -c "sleep 10 && 
+             curl -X POST http://ollama:11434/api/pull 
+             -d '{\"name\": \"llama3:8b\"}' &&
+             echo 'Завантаження завершено, виходжу...' && 
+             exit 0"
+
+  ollama-backend-client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ollama-backend-client
+    depends_on:
+      - ollama
+    environment:
+      - RabbitMq__HostName=rabbitmq.infrastructure.kub.k2.lan
+      - RabbitMq__Port=5672
+      - RabbitMq__UserName=ollama-back
+      - RabbitMq__Password=ollama-back
+      - RabbitMq__VirtualHost=ollama
+      - RabbitMq__RequestQueue=ollama-requests
+      - RabbitMq__PrefetchCount=4
+      - Ollama__BaseUrl=http://127.0.0.1:11434
+      - Ollama__Model=llama3:8b
+      - Ollama__Timeout=00:05:00
+      - ElasticApm__ServiceName=ollama-backend-client
+      - ElasticApm__Environment=Production
+      - ElasticApm__ServerUrl=https://apm.infrastructure.kub.k2.lan
+      - ElasticApm__TransactionSampleRate=
+      - ElasticApm__Enabled=true
+      - ElasticApm__GlobalLabels=group=LLM
+      - ELASTIC_APM_VERIFY_SERVER_CERT=false
+    network_mode: host
+    restart: unless-stopped
+
+volumes:
+  ollama:
+    name: ollama_ollama
