@@ -19,6 +19,7 @@ services:
   ollama-model-puller:
     image: curlimages/curl:latest
     container_name: ollama-model-puller
+    network_mode: host
     depends_on:
       - ollama
     restart: "no"
@@ -26,8 +27,7 @@ services:
     # потім робимо запит на завантаження моделі
     command: >
       sh -c "sleep 10 && 
-             curl -X POST http://ollama:11434/api/pull 
-             -d '{\"name\": \"llama3:8b\"}' &&
+             curl -X POST http://127.0.0.1:11434/api/pull -d '{\"name\": \"llama3:8b\"}' &&
              echo 'Завантаження завершено, виходжу...' && 
              exit 0"
 
