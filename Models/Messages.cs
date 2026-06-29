@@ -11,7 +11,8 @@ public sealed record IncomingMessage(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("temperature")] double Temperature = 1.0,
-    [property: JsonPropertyName("system")] string? System = null);
+    [property: JsonPropertyName("system")] string? System = null,
+    [property: JsonPropertyName("timeout")] int Timeout = 1000);
 
 /// <summary>Result published to the per-message reply queue (queue name == message id).</summary>
 public sealed record ResultMessage(
