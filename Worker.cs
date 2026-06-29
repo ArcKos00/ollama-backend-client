@@ -115,7 +115,7 @@ public sealed class Worker(
                     Response: generation.Response ?? string.Empty,
                     Model: generation.Model ?? _ollama.Model);
 
-                await publisher.PublishAsync(result, CancellationToken.None);
+                await publisher.PublishAsync(result, msg.Timeout, CancellationToken.None);
                 await channel.BasicAckAsync(deliveryTag, multiple: false);
             }
             catch (Exception ex)
@@ -130,7 +130,7 @@ public sealed class Worker(
 
                 try
                 {
-                    await publisher.PublishAsync(errorResult, CancellationToken.None);
+                    await publisher.PublishAsync(errorResult, msg.Timeout, CancellationToken.None);
                     await channel.BasicAckAsync(deliveryTag, multiple: false);
                 }
                 catch (Exception publishEx)
