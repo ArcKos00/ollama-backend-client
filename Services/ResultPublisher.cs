@@ -15,8 +15,11 @@ public sealed class ResultPublisher(RabbitMqConnection connection, ILogger<Resul
     private readonly SemaphoreSlim _gate = new(1, 1);
     private IChannel? _channel;
 
-    public async Task PublishAsync(ResultMessage result, CancellationToken cancellationToken)
+    public async Task PublishAsync(ResultMessage result, int replyQueueTimeoutMs, CancellationToken cancellationToken)
     {
+        if (replyQueueTimeoutMs <= 0)
+            throw new ArgumentOutOfRangeException(nameof(replyQueueTimeoutMs), "Reply queue timeout must be greater than zero.");
+
         var body = JsonSerializer.SerializeToUtf8Bytes(result, AppJsonContext.Default.ResultMessage);
 
         var props = new BasicProperties
@@ -32,9 +35,14 @@ public sealed class ResultPublisher(RabbitMqConnection connection, ILogger<Resul
             var channel = await EnsureChannelAsync(cancellationToken);
 
             // Declare the reply queue (idempotent) so it exists even with no consumer yet.
+            var queueArguments = new Dictionary<string, object?>
+            {
+                ["x-expires"] = replyQueueTimeoutMs
+            };
+
             await channel.QueueDeclareAsync(
                 queue: result.Id, durable: true, exclusive: false, autoDelete: false,
-                arguments: null, cancellationToken: cancellationToken);
+                arguments: queueArguments, cancellationToken: cancellationToken);
 
             // Default exchange ("") routes by routingKey straight to the queue of that name.
             await channel.BasicPublishAsync(
