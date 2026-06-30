@@ -2,6 +2,7 @@ using System.Text.Json;
 using Elastic.Apm;
 using Elastic.Apm.Api;
 using Microsoft.Extensions.Options;
+using Microsoft.VisualBasic;
 using OllamaProcessor.Configuration;
 using OllamaProcessor.Models;
 using OllamaProcessor.Services;
@@ -91,6 +92,8 @@ public sealed class Worker(
             transaction.SetLabel("ollama.model", _ollama.Model);
             transaction.SetLabel("ollama.temperature", msg.Temperature);
             transaction.SetLabel("request.text", Truncate(msg.Text));
+            transaction.SetLabel("request.timeout", msg.Timeout);
+            
             if (!string.IsNullOrEmpty(msg.System))
                 transaction.SetLabel("request.system", Truncate(msg.System));
 
