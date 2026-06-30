@@ -100,7 +100,8 @@ From the RabbitMQ management UI (http://localhost:15672, guest/guest), publish t
   "id": "demo-1",
   "text": "Say hello in one short sentence.",
   "temperature": 1.0,
-  "system": "You are a terse assistant."
+  "system": "You are a terse assistant.",
+  "timeout": 100000
 }
 ```
 
