@@ -45,7 +45,7 @@ services:
       - RabbitMq__Password=ollama-back
       - RabbitMq__VirtualHost=ollama
       - RabbitMq__RequestQueue=ollama-requests
-      - RabbitMq__PrefetchCount=4
+      - RabbitMq__PrefetchCount=1
       - Ollama__BaseUrl=http://127.0.0.1:11434
       - Ollama__Model=llama3:8b
       - Ollama__Timeout=00:05:00
