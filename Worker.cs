@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Elastic.Apm;
 using Elastic.Apm.Api;
@@ -84,6 +85,10 @@ public sealed class Worker(
 
         var msg = message; // non-null past the guard; captured by the trace delegate
 
+        // Continue the caller's distributed trace: prefer the AMQP header, fall back to the
+        // traceparent carried in the message body. Null => start a fresh root transaction.
+        var tracingData = ExtractDistributedTracingData(ea, msg);
+
         // One APM transaction per message; the Ollama call is a child span that carries
         // the request prompt and the generated response for end-to-end tracing.
         await Agent.Tracer.CaptureTransaction("process-message", "messaging", async transaction =>
@@ -142,7 +147,45 @@ public sealed class Worker(
                     await channel.BasicNackAsync(deliveryTag, multiple: false, requeue: true);
                 }
             }
-        });
+        }, tracingData);
+    }
+
+    // W3C header used to propagate the trace across the message boundary.
+    private const string TraceParentHeader = "traceparent";
+
+    /// <summary>
+    /// Resolves the incoming <c>traceparent</c> so this transaction joins the caller's trace.
+    /// AMQP headers win over the message body; returns <c>null</c> when nothing usable is present,
+    /// which makes <see cref="ITracer.CaptureTransaction"/> begin a new root transaction.
+    /// </summary>
+    private DistributedTracingData? ExtractDistributedTracingData(BasicDeliverEventArgs ea, IncomingMessage message)
+    {
+        var traceParent = ReadHeader(ea, TraceParentHeader);
+        if (string.IsNullOrWhiteSpace(traceParent))
+            traceParent = message.Traceparent;
+
+        if (string.IsNullOrWhiteSpace(traceParent))
+            return null;
+
+        var tracingData = DistributedTracingData.TryDeserializeFromString(traceParent);
+        if (tracingData is null)
+            logger.LogWarning("Ignoring malformed traceparent '{TraceParent}' for id={Id}", traceParent, message.Id);
+
+        return tracingData;
+    }
+
+    /// <summary>Reads an AMQP header as a string; header values arrive as UTF-8 <c>byte[]</c>.</summary>
+    private static string? ReadHeader(BasicDeliverEventArgs ea, string name)
+    {
+        if (ea.BasicProperties.Headers is not { } headers || !headers.TryGetValue(name, out var value))
+            return null;
+
+        return value switch
+        {
+            byte[] bytes => Encoding.UTF8.GetString(bytes),
+            string s => s,
+            _ => value?.ToString(),
+        };
     }
 
     private static string Truncate(string value) =>
