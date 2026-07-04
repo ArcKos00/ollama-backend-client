@@ -16,6 +16,10 @@ set -euo pipefail
 # git можуть «не знайтись». Додаємо типові локації, щоб працювало і з cron.
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin:${PATH:-}"
 
+# Під cron немає термінала: git не має зависати в очікуванні логіна/пароля,
+# а одразу падати з помилкою (її зловимо нижче на git fetch).
+export GIT_TERMINAL_PROMPT=0
+
 # Корінь репозиторію (== директорія скрипта)
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
