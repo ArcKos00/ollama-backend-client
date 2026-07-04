@@ -40,3 +40,5 @@ public sealed class OllamaClient(IOllamaApiClient client, ILogger<OllamaClient> 
             Model: final?.Model ?? client.SelectedModel ?? string.Empty);
     }
 }
+
+
