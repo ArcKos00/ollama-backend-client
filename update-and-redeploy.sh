@@ -1,84 +1,62 @@
 #!/usr/bin/env bash
 #
-# Стежить за поточним git-репозиторієм і при появі нового коміта
-# у відстежуваній гілці:
-#   1. викачує зміни (git fetch + hard reset до origin/<гілка>);
-#   2. перезапускає docker compose з повним перебілдом (--no-cache).
+# СКРИПТ 2 — робоча одиниця.
+# Одноразова перевірка оновлень поточного git-репозиторію:
+#   якщо в origin/<гілка> зʼявився новий коміт — викачує його
+#   (git reset --hard) і робить повний перебілд docker compose (--no-cache).
+# Якщо оновлень немає — нічого не робить і виходить.
 #
-# Використання:
-#   ./update-and-redeploy.sh                 # цикл, інтервал 60с
-#   POLL_INTERVAL=30 ./update-and-redeploy.sh   # свій інтервал (секунди)
-#   INITIAL_DEPLOY=false ./update-and-redeploy.sh   # не деплоїти одразу на старті
-#   ONCE=true ./update-and-redeploy.sh          # разова перевірка без циклу
+# Призначений для періодичного запуску з cron (див. install-cron.sh),
+# але його можна запускати й вручну:
+#   ./update-and-redeploy.sh
 #
 set -euo pipefail
 
-# --- Налаштування (можна перевизначити через змінні оточення) -------------
-POLL_INTERVAL="${POLL_INTERVAL:-60}"      # інтервал перевірки, секунди
-INITIAL_DEPLOY="${INITIAL_DEPLOY:-true}"  # зробити деплой одразу при старті
-ONCE="${ONCE:-false}"                     # true = перевірити один раз і вийти
+# Корінь репозиторію (== директорія скрипта)
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_DIR"
 
-# Переходимо в директорію скрипта (== корінь репозиторію)
-cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
-# --- Визначаємо команду docker compose (v2 "docker compose" чи v1) --------
+# --- Захист від паралельних запусків --------------------------------------
+# Перебілд може тривати довше за інтервал cron — не даємо двом запускам
+# накластись один на одного.
+LOCK_FILE="${REPO_DIR}/.update-and-redeploy.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    log "Інший запуск ще працює — пропускаю цю ітерацію."
+    exit 0
+fi
+
+# --- Команда docker compose (v2 "docker compose" чи v1) -------------------
 if docker compose version >/dev/null 2>&1; then
     DC="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then
     DC="docker-compose"
 else
-    echo "ERROR: не знайдено ані 'docker compose', ані 'docker-compose'." >&2
+    log "ERROR: не знайдено ані 'docker compose', ані 'docker-compose'."
     exit 1
 fi
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+# --- Перевірка оновлень ----------------------------------------------------
+git fetch --quiet origin "$BRANCH"
+LOCAL="$(git rev-parse HEAD)"
+REMOTE="$(git rev-parse "origin/${BRANCH}")"
 
-redeploy() {
-    log "Повний перебілд і перезапуск docker compose..."
-    $DC down --remove-orphans
-    $DC build --no-cache
-    $DC up -d --force-recreate
-    log "Готово. Контейнери підняті."
-}
-
-update_repo() {
-    log "Виявлено новий коміт — викачую зміни..."
-    # Жорсткий reset гарантує, що деплой = точний стан origin/<гілка>
-    git reset --hard "origin/${BRANCH}"
-    log "Репозиторій оновлено до $(git rev-parse --short HEAD)."
-}
-
-check_once() {
-    git fetch --quiet origin "$BRANCH"
-    local local_rev remote_rev
-    local_rev="$(git rev-parse HEAD)"
-    remote_rev="$(git rev-parse "origin/${BRANCH}")"
-
-    if [ "$local_rev" != "$remote_rev" ]; then
-        update_repo
-        redeploy
-    else
-        log "Оновлень немає (HEAD = ${local_rev:0:7})."
-    fi
-}
-
-# --- Старт -----------------------------------------------------------------
-log "Стеження за гілкою '${BRANCH}'. Docker: '${DC}'. Інтервал: ${POLL_INTERVAL}с."
-
-if [ "$INITIAL_DEPLOY" = "true" ]; then
-    log "Початковий деплой при старті..."
-    redeploy
-fi
-
-if [ "$ONCE" = "true" ]; then
-    check_once
+if [ "$LOCAL" = "$REMOTE" ]; then
+    log "Оновлень немає (гілка '${BRANCH}', HEAD=${LOCAL:0:7})."
     exit 0
 fi
 
-# Основний цикл
-while true; do
-    check_once || log "УВАГА: ітерація завершилась з помилкою, продовжую."
-    sleep "$POLL_INTERVAL"
-done
+# --- Оновлення + редеплой --------------------------------------------------
+log "Новий коміт у '${BRANCH}': ${LOCAL:0:7} -> ${REMOTE:0:7}. Оновлюю..."
+# Жорсткий reset гарантує, що деплой = точний стан origin/<гілка>
+git reset --hard "origin/${BRANCH}"
+
+log "Повний перебілд і перезапуск docker compose..."
+$DC down --remove-orphans
+$DC build --no-cache
+$DC up -d --force-recreate
+log "Готово. Розгорнуто ${REMOTE:0:7}."

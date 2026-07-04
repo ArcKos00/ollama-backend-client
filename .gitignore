@@ -20,6 +20,7 @@ appsettings.*.Local.json
 Thumbs.db
 .DS_Store
 
-# Auto-redeploy watcher runtime logs
+# Auto-redeploy runtime logs / lock
 update-and-redeploy.log
 *.log
+.update-and-redeploy.lock
