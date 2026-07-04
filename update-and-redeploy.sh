@@ -12,6 +12,10 @@
 #
 set -euo pipefail
 
+# cron дає мінімальний PATH (зазвичай лише /usr/bin:/bin), через що docker чи
+# git можуть «не знайтись». Додаємо типові локації, щоб працювало і з cron.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin:${PATH:-}"
+
 # Корінь репозиторію (== директорія скрипта)
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
@@ -41,7 +45,12 @@ fi
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 # --- Перевірка оновлень ----------------------------------------------------
-git fetch --quiet origin "$BRANCH"
+# Явно ловимо помилку fetch — під cron немає термінала для введення
+# креденшлів, тож проблема з доступом до origin має бути видима в логу.
+if ! git fetch origin "$BRANCH"; then
+    log "ERROR: git fetch не вдався. Перевір доступ до origin / креденшли (під cron немає інтерактивного вводу)."
+    exit 1
+fi
 LOCAL="$(git rev-parse HEAD)"
 REMOTE="$(git rev-parse "origin/${BRANCH}")"
 
