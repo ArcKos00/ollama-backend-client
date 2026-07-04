@@ -44,6 +44,113 @@ docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
 dotnet run
 ```
 
+## Deployment (Docker Compose)
+
+`docker-compose.yaml` brings up three services:
+
+| Service | Purpose |
+|---------|---------|
+| `ollama` | The Ollama runtime (`host` networking, NVIDIA GPU reservation, `ollama` volume). |
+| `ollama-model-puller` | One-shot: waits ~10s, then `POST /api/pull` for the model, then exits. |
+| `ollama-backend-client` | This worker; built from `Dockerfile`, configured via `environment:`. |
+
+> The compose file is **Linux-oriented**: `network_mode: host` and the `nvidia` GPU
+> reservation don't map cleanly onto Docker Desktop for Windows/macOS. The intended
+> target is a Linux host with the NVIDIA Container Toolkit installed.
+
+First bring-up (once, by hand):
+
+```bash
+docker compose up -d --build
+```
+
+## Auto-update on new commits
+
+Two role-based scripts keep a deployed checkout in sync with `origin` and redeploy on
+every new commit. Provided for both Linux and Windows:
+
+| Role | Linux | Windows |
+|------|-------|---------|
+| **Worker** — one-shot: if `origin/<branch>` has a new commit, `git reset --hard` + full `docker compose` rebuild; otherwise no-op | `update-and-redeploy.sh` | `update-and-redeploy.ps1` |
+| **Installer** — registers the worker to run periodically | `install-cron.sh` (cron) | `install-taskscheduler.ps1` (Task Scheduler) |
+
+The worker guards against overlapping runs (`flock` on Linux, a named mutex on Windows),
+so a rebuild that outlasts the interval simply skips the next tick. It also sets a sane
+`PATH` and `GIT_TERMINAL_PROMPT=0` so it behaves correctly in a non-interactive scheduler
+environment.
+
+### Linux
+
+```bash
+docker compose up -d --build            # initial bring-up, once
+INTERVAL_MINUTES=5 bash install-cron.sh # register the periodic check
+crontab -l                              # verify
+bash install-cron.sh --uninstall        # remove
+```
+
+Runs go to `update-and-redeploy.log` in the repo root (gitignored). Requires an enabled
+cron daemon (`systemctl enable --now cron` / `crond`).
+
+### Windows
+
+Run in an **elevated** PowerShell:
+
+```powershell
+docker compose up -d --build
+.\install-taskscheduler.ps1 -IntervalMinutes 5
+.\install-taskscheduler.ps1 -Uninstall   # remove
+```
+
+The task triggers `AtLogOn` + repeats every N minutes (Docker Desktop lives in the user
+session, so it needs an interactive logon).
+
+> `git reset --hard` is intentional: the deployed tree is made to exactly match
+> `origin/<branch>`, discarding any local edits to tracked files. Don't hand-edit tracked
+> files on a deploy host.
+
+## Git access on a deploy host
+
+A private repo needs **non-interactive** credentials, or the worker fails with
+`could not read Username for 'https://github.com'`. Cloning once is not enough — if no
+persistent credential helper was configured, the auth used at clone time is not saved.
+
+Two ways to provide durable credentials (pick one; no script changes needed):
+
+**SSH deploy key** (recommended — no expiry, read-only, scoped to one repo, works under
+cron without an agent):
+
+```bash
+ssh-keygen -t ed25519 -C "ollama-deploy" -f ~/.ssh/ollama_deploy -N ""
+cat ~/.ssh/ollama_deploy.pub    # add on GitHub: repo → Settings → Deploy keys → Add
+printf '\nHost github.com\n    IdentityFile ~/.ssh/ollama_deploy\n    IdentitiesOnly yes\n' >> ~/.ssh/config
+ssh-keyscan github.com >> ~/.ssh/known_hosts
+git remote set-url origin git@github.com:<owner>/<repo>.git
+git fetch origin
+```
+
+**Personal Access Token via the store helper** (quick; token saved in plaintext):
+
+```bash
+git remote set-url origin https://github.com/<owner>/<repo>.git
+git config credential.helper store
+git fetch origin      # Username: <login>, Password: <PAT with Contents:Read>
+```
+
+On Windows, an existing Git Credential Manager login is reused automatically **when the
+task runs in your logged-on session** (the `AtLogOn` trigger). It is not available before
+logon or under a pure S4U/headless context — there, use an SSH deploy key or the store
+helper.
+
+### Troubleshooting
+
+| Symptom (in the log) | Cause | Fix |
+|----------------------|-------|-----|
+| `could not read Username … terminal prompts disabled` | No durable credentials for this user | Set up a deploy key or `credential.helper store` (above) |
+| `ERROR: docker compose не знайдено` | Scheduler's minimal `PATH` misses `docker` | The worker already extends `PATH`; if still failing, `which docker` and add its dir |
+| Worker runs but never redeploys | Already up to date, or checking a different branch | Confirm `git rev-parse --abbrev-ref HEAD` is the branch you push to |
+| Nothing in the log at all | cron not firing / task not registered | `crontab -l` (Linux) or `Get-ScheduledTask` (Windows); ensure the daemon/service is enabled |
+| `Permission denied` running `*.sh` | Missing exec bit after checkout | `chmod +x *.sh`, or invoke via `bash <script>.sh` |
+
 ## Behavior notes
 
 - **Result queue:** declared durable and named after the `id`; the result body is
