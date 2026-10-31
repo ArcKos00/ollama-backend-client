@@ -51,12 +51,23 @@ dotnet run
 | Service | Purpose |
 |---------|---------|
 | `ollama` | The Ollama runtime (`host` networking, NVIDIA GPU reservation, `ollama` volume). |
-| `ollama-model-puller` | One-shot: waits ~10s, then `POST /api/pull` for the model, then exits. |
+| `ollama-model-puller` | One-shot: waits for Ollama, checks `/api/tags`, and `POST /api/pull` **only if the model is missing** (an already-downloaded model is not re-fetched), then exits. |
 | `ollama-backend-client` | This worker; built from `Dockerfile`, configured via `environment:`. |
 
 > The compose file is **Linux-oriented**: `network_mode: host` and the `nvidia` GPU
 > reservation don't map cleanly onto Docker Desktop for Windows/macOS. The intended
 > target is a Linux host with the NVIDIA Container Toolkit installed.
+
+Secrets and internal addresses (RabbitMQ host/user/password, APM URL, model) are **not**
+in the compose file — it reads them from a gitignored `.env` via `${VAR}` interpolation.
+Copy the template and fill it before the first bring-up:
+
+```bash
+cp .env.example .env     # then edit .env with real values
+```
+
+Required keys (compose fails loudly if unset): `RABBITMQ_HOST`, `RABBITMQ_USER`,
+`RABBITMQ_PASSWORD`, `APM_SERVER_URL`. The rest have defaults in `docker-compose.yaml`.
 
 First bring-up (once, by hand):
 
@@ -66,43 +77,56 @@ docker compose up -d --build
 
 ## Auto-update on new commits
 
-Two role-based scripts keep a deployed checkout in sync with `origin` and redeploy on
-every new commit. Provided for both Linux and Windows:
+Each deployed host keeps itself in sync with `origin` and redeploys on every new commit.
+One run **checks the repo it lives in**: if `origin/<branch>` moved, `git reset --hard` to
+it and `docker compose up -d --build --remove-orphans` (rebuilds only what changed and
+recreates only the affected containers — `ollama` is left running). Otherwise it's a no-op.
 
-| Role | Linux | Windows |
-|------|-------|---------|
-| **Worker** — one-shot: if `origin/<branch>` has a new commit, `git reset --hard` + full `docker compose` rebuild; otherwise no-op | `update-and-redeploy.sh` | `update-and-redeploy.ps1` |
-| **Installer** — registers the worker to run periodically | `install-cron.sh` (cron) | `install-taskscheduler.ps1` (Task Scheduler) |
+Three scripts, one per entry point:
 
-The worker guards against overlapping runs (`flock` on Linux, a named mutex on Windows),
-so a rebuild that outlasts the interval simply skips the next tick. It also sets a sane
-`PATH` and `GIT_TERMINAL_PROMPT=0` so it behaves correctly in a non-interactive scheduler
-environment.
+| Script | Platform | Role |
+|--------|----------|------|
+| `update-and-redeploy.sh`  | Linux / macOS | check + redeploy; self-schedules via **cron** |
+| `update-and-redeploy.ps1` | Windows       | check + redeploy; self-schedules via **Task Scheduler** |
+| `update.sh`               | universal     | detects the OS and dispatches to one of the above |
 
-### Linux
+Each platform script is **both** the worker (what the scheduler calls) and its own
+installer — the same file, selected by subcommand:
+
+| Intent | Linux / universal | Windows (direct) |
+|--------|-------------------|------------------|
+| run once | `./update.sh` | `.\update-and-redeploy.ps1` |
+| schedule every N min + run now | `./update.sh install [N]` | `.\update-and-redeploy.ps1 -Install -IntervalMinutes N` |
+| remove schedule | `./update.sh uninstall` | `.\update-and-redeploy.ps1 -Uninstall` |
+
+`N` defaults to 5 (valid 1..59). Runs overlap-guard themselves (`flock` on Linux, a named
+mutex on Windows), so a rebuild that outlasts the interval just skips the next tick; they
+also set a sane `PATH` and `GIT_TERMINAL_PROMPT=0` for the non-interactive scheduler
+environment. Output goes to `update-and-redeploy.log` in the repo root (gitignored).
+
+### One command per client host
 
 ```bash
-docker compose up -d --build            # initial bring-up, once
-INTERVAL_MINUTES=5 bash install-cron.sh # register the periodic check
-crontab -l                              # verify
-bash install-cron.sh --uninstall        # remove
+docker compose up -d --build     # initial bring-up, once by hand
+./update.sh install 5            # self-update every 5 min from here on
+./update.sh                      # (optional) check right now
+./update.sh uninstall            # stop self-updating
 ```
 
-Runs go to `update-and-redeploy.log` in the repo root (gitignored). Requires an enabled
-cron daemon (`systemctl enable --now cron` / `crond`).
+`update.sh` runs natively on Linux, macOS and WSL, and on Windows from Git Bash / MSYS /
+Cygwin (it then calls `powershell`/`pwsh` with the `.ps1`). Linux needs an enabled cron
+daemon (`systemctl enable --now cron` / `crond`).
 
-### Windows
+### Windows without Git Bash
 
-Run in an **elevated** PowerShell:
+Run the `.ps1` directly in an **elevated** PowerShell (it needs admin to register the
+task; the `AtLogOn` trigger means Docker Desktop is available in the logged-on session):
 
 ```powershell
 docker compose up -d --build
-.\install-taskscheduler.ps1 -IntervalMinutes 5
-.\install-taskscheduler.ps1 -Uninstall   # remove
+.\update-and-redeploy.ps1 -Install -IntervalMinutes 5
+.\update-and-redeploy.ps1 -Uninstall   # remove
 ```
-
-The task triggers `AtLogOn` + repeats every N minutes (Docker Desktop lives in the user
-session, so it needs an interactive logon).
 
 > `git reset --hard` is intentional: the deployed tree is made to exactly match
 > `origin/<branch>`, discarding any local edits to tracked files. Don't hand-edit tracked

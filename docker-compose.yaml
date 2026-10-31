@@ -23,13 +23,28 @@ services:
     depends_on:
       - ollama
     restart: "no"
-    # Чекаємо 10 секунд, щоб ollama точно встигла піднятися, 
-    # потім робимо запит на завантаження моделі
-    command: >
-      sh -c "sleep 10 && 
-             curl -X POST http://127.0.0.1:11434/api/pull -d '{\"name\": \"llama3:8b\"}' &&
-             echo 'Завантаження завершено, виходжу...' && 
-             exit 0"
+    environment:
+      # Значення береться з .env (інтерполяція compose). Одне джерело правди
+      # для моделі — спільне з ollama-backend-client нижче.
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:8b}
+    # Якщо модель уже є у volume — НЕ тягнемо наново: лише перевіряємо
+    # наявність через /api/tags і завантажуємо тільки якщо її немає.
+    # $$OLLAMA_MODEL — подвійний $, щоб compose НЕ інтерполював, а підставив
+    # shell, узявши значення зі змінної середовища контейнера (вище).
+    command:
+      - sh
+      - -ec
+      - |
+        # Чекаємо, поки ollama почне приймати запити (замість «голого» sleep).
+        curl -sf --retry 30 --retry-delay 2 --retry-connrefused \
+          http://127.0.0.1:11434/api/tags -o /tmp/tags.json
+        if grep -q "\"$$OLLAMA_MODEL\"" /tmp/tags.json; then
+          echo "Модель $$OLLAMA_MODEL вже завантажена — пропускаю pull."
+        else
+          echo "Завантажую $$OLLAMA_MODEL..."
+          curl -X POST http://127.0.0.1:11434/api/pull -d "{\"name\": \"$$OLLAMA_MODEL\"}"
+          echo "Завантаження завершено."
+        fi
 
   ollama-backend-client:
     build:
@@ -39,23 +54,25 @@ services:
     depends_on:
       - ollama
     environment:
-      - RabbitMq__HostName=rabbitmq.infrastructure.kub.k2.lan
-      - RabbitMq__Port=5672
-      - RabbitMq__UserName=ollama-back
-      - RabbitMq__Password=ollama-back
-      - RabbitMq__VirtualHost=ollama
-      - RabbitMq__RequestQueue=ollama-requests
-      - RabbitMq__PrefetchCount=1
-      - Ollama__BaseUrl=http://127.0.0.1:11434
-      - Ollama__Model=llama3:8b
-      - Ollama__Timeout=00:05:00
-      - ElasticApm__ServiceName=ollama-backend-client
-      - ElasticApm__Environment=Production
-      - ElasticApm__ServerUrl=https://apm.infrastructure.kub.k2.lan
-      - ElasticApm__TransactionSampleRate=
-      - ElasticApm__Enabled=true
-      - ElasticApm__GlobalLabels=group=LLM
-      - ELASTIC_APM_VERIFY_SERVER_CERT=false
+      # Секрети й внутрішні адреси — з .env (див. .env.example).
+      # ${VAR:?...} = обов'язкові: якщо не задані, compose впаде з цим текстом.
+      - RabbitMq__HostName=${RABBITMQ_HOST:?set RABBITMQ_HOST in .env}
+      - RabbitMq__Port=${RABBITMQ_PORT:-5672}
+      - RabbitMq__UserName=${RABBITMQ_USER:?set RABBITMQ_USER in .env}
+      - RabbitMq__Password=${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+      - RabbitMq__VirtualHost=${RABBITMQ_VHOST:-ollama}
+      - RabbitMq__RequestQueue=${RABBITMQ_REQUEST_QUEUE:-ollama-requests}
+      - RabbitMq__PrefetchCount=${RABBITMQ_PREFETCH:-1}
+      - Ollama__BaseUrl=${OLLAMA_BASE_URL:-http://127.0.0.1:11434}
+      - Ollama__Model=${OLLAMA_MODEL:-llama3:8b}
+      - Ollama__Timeout=${OLLAMA_TIMEOUT:-00:05:00}
+      - ElasticApm__ServiceName=${APM_SERVICE_NAME:-ollama-backend-client}
+      - ElasticApm__Environment=${APM_ENVIRONMENT:-Production}
+      - ElasticApm__ServerUrl=${APM_SERVER_URL:?set APM_SERVER_URL in .env}
+      - ElasticApm__TransactionSampleRate=${APM_SAMPLE_RATE:-}
+      - ElasticApm__Enabled=${APM_ENABLED:-true}
+      - ElasticApm__GlobalLabels=${APM_GLOBAL_LABELS:-group=LLM}
+      - ELASTIC_APM_VERIFY_SERVER_CERT=${APM_VERIFY_CERT:-false}
     network_mode: host
     restart: unless-stopped
 

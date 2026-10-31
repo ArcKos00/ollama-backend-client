@@ -1,75 +1,129 @@
 #!/usr/bin/env bash
 #
-# СКРИПТ 2 — робоча одиниця.
-# Одноразова перевірка оновлень поточного git-репозиторію:
-#   якщо в origin/<гілка> зʼявився новий коміт — викачує його
-#   (git reset --hard) і робить повний перебілд docker compose (--no-cache).
-# Якщо оновлень немає — нічого не робить і виходить.
+# СКРИПТ (Linux/macOS) — самооновлюваний клієнт OllamaProcessor.
 #
-# Призначений для періодичного запуску з cron (див. install-cron.sh),
-# але його можна запускати й вручну:
-#   ./update-and-redeploy.sh
+# Перевіряє, чи зʼявився новий коміт в origin/<гілка> для ЦЬОГО ж репозиторію
+# (того, з якого запущено скрипт). Якщо так — викачує його (git reset --hard)
+# і перезбирає/перезапускає docker compose. Якщо ні — нічого не робить.
+#
+# Команди:
+#   ./update-and-redeploy.sh                 одноразова перевірка + редеплой за потреби
+#   ./update-and-redeploy.sh install [N]     прописати cron кожні N хв (1..59, типово 5)
+#                                            + зробити первинну перевірку одразу
+#   ./update-and-redeploy.sh uninstall       прибрати запис із cron
+#
+# Один файл = і робоча одиниця (її викликає cron), і встановлювач розкладу.
 #
 set -euo pipefail
 
-# cron дає мінімальний PATH (зазвичай лише /usr/bin:/bin), через що docker чи
-# git можуть «не знайтись». Додаємо типові локації, щоб працювало і з cron.
+# cron дає мінімальний PATH — доповнюємо типовими локаціями docker/git.
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin:${PATH:-}"
-
-# Під cron немає термінала: git не має зависати в очікуванні логіна/пароля,
-# а одразу падати з помилкою (її зловимо нижче на git fetch).
+# Під cron немає термінала: git має одразу падати, а не зависати в очікуванні логіна.
 export GIT_TERMINAL_PROMPT=0
 
-# Корінь репозиторію (== директорія скрипта)
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
-
-# --- Захист від паралельних запусків --------------------------------------
-# Перебілд може тривати довше за інтервал cron — не даємо двом запускам
-# накластись один на одного.
+SELF="${REPO_DIR}/$(basename "${BASH_SOURCE[0]}")"
+LOG_FILE="${REPO_DIR}/update-and-redeploy.log"
 LOCK_FILE="${REPO_DIR}/.update-and-redeploy.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    log "Інший запуск ще працює — пропускаю цю ітерацію."
-    exit 0
-fi
+MARKER="# ollama-processor auto-redeploy"
 
-# --- Команда docker compose (v2 "docker compose" чи v1) -------------------
-if docker compose version >/dev/null 2>&1; then
-    DC="docker compose"
-elif command -v docker-compose >/dev/null 2>&1; then
-    DC="docker-compose"
-else
-    log "ERROR: не знайдено ані 'docker compose', ані 'docker-compose'."
-    exit 1
-fi
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+die() { log "ERROR: $*" >&2; exit 1; }
 
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+# docker compose v2 ("docker compose") або v1 ("docker-compose")
+compose_cmd() {
+    if docker compose version >/dev/null 2>&1; then
+        echo "docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        echo "docker-compose"
+    else
+        return 1
+    fi
+}
 
-# --- Перевірка оновлень ----------------------------------------------------
-# Явно ловимо помилку fetch — під cron немає термінала для введення
-# креденшлів, тож проблема з доступом до origin має бути видима в логу.
-if ! git fetch origin "$BRANCH"; then
-    log "ERROR: git fetch не вдався. Перевір доступ до origin / креденшли (під cron немає інтерактивного вводу)."
-    exit 1
-fi
-LOCAL="$(git rev-parse HEAD)"
-REMOTE="$(git rev-parse "origin/${BRANCH}")"
+do_run() {
+    # Захист від накладання запусків: перебілд може тривати довше за інтервал cron.
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$LOCK_FILE"
+        if ! flock -n 9; then
+            log "Інший запуск ще працює — пропускаю цю ітерацію."
+            exit 0
+        fi
+    fi
 
-if [ "$LOCAL" = "$REMOTE" ]; then
-    log "Оновлень немає (гілка '${BRANCH}', HEAD=${LOCAL:0:7})."
-    exit 0
-fi
+    local DC
+    DC="$(compose_cmd)" || die "не знайдено ані 'docker compose', ані 'docker-compose'."
 
-# --- Оновлення + редеплой --------------------------------------------------
-log "Новий коміт у '${BRANCH}': ${LOCAL:0:7} -> ${REMOTE:0:7}. Оновлюю..."
-# Жорсткий reset гарантує, що деплой = точний стан origin/<гілка>
-git reset --hard "origin/${BRANCH}"
+    local BRANCH LOCAL REMOTE
+    BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
-log "Повний перебілд і перезапуск docker compose..."
-$DC down --remove-orphans
-$DC build --no-cache
-$DC up -d --force-recreate
-log "Готово. Розгорнуто ${REMOTE:0:7}."
+    # Явно ловимо помилку fetch — під cron немає інтерактивного вводу креденшлів.
+    git fetch origin "$BRANCH" \
+        || die "git fetch не вдався. Перевір доступ до origin / креденшли (під cron немає інтерактивного вводу)."
+
+    LOCAL="$(git rev-parse HEAD)"
+    REMOTE="$(git rev-parse "origin/${BRANCH}")"
+
+    if [ "$LOCAL" = "$REMOTE" ]; then
+        log "Оновлень немає (гілка '${BRANCH}', HEAD=${LOCAL:0:7})."
+        return 0
+    fi
+
+    log "Новий коміт у '${BRANCH}': ${LOCAL:0:7} -> ${REMOTE:0:7}. Оновлюю..."
+    # Жорсткий reset: деплой = точний стан origin/<гілка> (локальні правки tracked-файлів зникнуть).
+    git reset --hard "origin/${BRANCH}"
+
+    log "Перезбірка та перезапуск docker compose..."
+    # up --build перебудовує лише те, чий контекст змінився, і перестворює лише
+    # контейнери зі зміненим образом/конфігом — ollama не чіпається дарма.
+    $DC up -d --build --remove-orphans
+    log "Готово. Розгорнуто ${REMOTE:0:7}."
+}
+
+do_install() {
+    local n="${1:-${INTERVAL_MINUTES:-5}}"
+    if ! [[ "$n" =~ ^[0-9]+$ ]] || [ "$n" -lt 1 ] || [ "$n" -gt 59 ]; then
+        die "інтервал має бути числом 1..59 (задано: '${n}')."
+    fi
+    chmod +x "$SELF" 2>/dev/null || true
+
+    local schedule="*/${n} * * * *"
+    local line="${schedule} cd '${REPO_DIR}' && '${SELF}' >> '${LOG_FILE}' 2>&1 ${MARKER}"
+    {
+        crontab -l 2>/dev/null | grep -vF "$MARKER" || true
+        echo "$line"
+    } | crontab -
+
+    log "Cron прописано: кожні ${n} хв (${schedule}). Лог: ${LOG_FILE}"
+    log "Перевірити: crontab -l    |    Прибрати: '${SELF}' uninstall"
+    log "УВАГА: служба cron має бути увімкнена (systemctl enable --now cron|crond)."
+    log "Роблю первинну перевірку зараз..."
+    do_run
+}
+
+do_uninstall() {
+    { crontab -l 2>/dev/null | grep -vF "$MARKER" || true; } | crontab - 2>/dev/null || true
+    log "Запис cron прибрано (marker: ${MARKER})."
+}
+
+usage() {
+    cat <<EOF
+Самооновлюваний клієнт OllamaProcessor (Linux/macOS).
+
+  $(basename "$SELF")                 одноразова перевірка нових комітів + редеплой
+  $(basename "$SELF") install [N]     прописати cron кожні N хв (1..59, типово 5) + первинний запуск
+  $(basename "$SELF") uninstall       прибрати cron
+
+Перший запуск стека (один раз, вручну):  docker compose up -d --build
+EOF
+}
+
+case "${1:-run}" in
+    run|"")               do_run ;;
+    install|--install)    shift || true; do_install "${1:-}" ;;
+    uninstall|--uninstall) do_uninstall ;;
+    -h|--help|help)       usage ;;
+    *)                    die "невідома команда: '$1' (дивись --help)." ;;
+esac

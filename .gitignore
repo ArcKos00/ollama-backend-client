@@ -10,6 +10,10 @@ appsettings.Development.json
 appsettings.*.Local.json
 *.user
 
+# Docker compose secrets / internal addresses — never commit (.env.example is the template)
+.env
+!.env.example
+
 # IDE / tooling
 .vs/
 .idea/
