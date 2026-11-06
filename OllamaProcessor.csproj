@@ -16,4 +16,13 @@
     <PackageReference Include="OllamaSharp" Version="5.4.25" />
     <PackageReference Include="RabbitMQ.Client" Version="7.2.1" />
   </ItemGroup>
+
+  <!-- Unit tests live in tests/ and are a separate project: keep them out of the worker build. -->
+  <ItemGroup>
+    <Compile Remove="tests/**" />
+    <Content Remove="tests/**" />
+    <None Remove="tests/**" />
+    <EmbeddedResource Remove="tests/**" />
+    <InternalsVisibleTo Include="OllamaProcessor.Tests" />
+  </ItemGroup>
 </Project>

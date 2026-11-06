@@ -85,6 +85,12 @@ public sealed class Worker(
 
         var msg = message; // non-null past the guard; captured by the trace delegate
 
+        // RPC reply routing: when the caller set reply_to (e.g. direct reply-to
+        // `amq.rabbitmq.reply-to`), the reply goes there with its correlation_id.
+        // Without reply_to the legacy queue-named-after-id path is used.
+        var replyTo = ea.BasicProperties.ReplyTo;
+        var correlationId = ea.BasicProperties.CorrelationId;
+
         // Continue the caller's distributed trace: prefer the AMQP header, fall back to the
         // traceparent carried in the message body. Null => start a fresh root transaction.
         var tracingData = ExtractDistributedTracingData(ea, msg);
@@ -98,6 +104,7 @@ public sealed class Worker(
             transaction.SetLabel("ollama.temperature", msg.Temperature);
             transaction.SetLabel("request.text", Truncate(msg.Text));
             transaction.SetLabel("request.timeout", msg.Timeout);
+            transaction.SetLabel("request.reply_mode", string.IsNullOrWhiteSpace(replyTo) ? "queue" : "reply_to");
             
             if (!string.IsNullOrEmpty(msg.System))
                 transaction.SetLabel("request.system", Truncate(msg.System));
@@ -123,7 +130,7 @@ public sealed class Worker(
                     Response: generation.Response ?? string.Empty,
                     Model: generation.Model ?? _ollama.Model);
 
-                await publisher.PublishAsync(result, msg.Timeout, CancellationToken.None);
+                await publisher.PublishAsync(result, msg.Timeout, replyTo, correlationId, CancellationToken.None);
                 await channel.BasicAckAsync(deliveryTag, multiple: false);
             }
             catch (Exception ex)
@@ -138,7 +145,7 @@ public sealed class Worker(
 
                 try
                 {
-                    await publisher.PublishAsync(errorResult, msg.Timeout, CancellationToken.None);
+                    await publisher.PublishAsync(errorResult, msg.Timeout, replyTo, correlationId, CancellationToken.None);
                     await channel.BasicAckAsync(deliveryTag, multiple: false);
                 }
                 catch (Exception publishEx)
