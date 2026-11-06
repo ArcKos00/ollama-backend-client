@@ -4,7 +4,8 @@ A .NET 10 Worker Service that processes work asynchronously:
 
 1. Consumes `{ "id": ..., "text": ... }` messages from a RabbitMQ request queue.
 2. Sends `text` to an Ollama service using the [OllamaSharp](https://github.com/awaescher/OllamaSharp) client (`/api/generate`, streamed and consolidated).
-3. Publishes the result to a reply queue **named after the message `id`** (default exchange, `routingKey == id`).
+3. Publishes the result to the request's `reply_to` (with its `correlation_id`), or — when
+   `reply_to` is absent — to a reply queue **named after the message `id`** (default exchange, `routingKey == id`).
 
 ```
 RabbitMQ (ollama-requests)  ─►  Worker  ─►  Ollama /api/generate
@@ -177,9 +178,17 @@ helper.
 
 ## Behavior notes
 
-- **Result queue:** declared durable and named after the `id`; the result body is
-  `{ "id", "response", "model", "error" }`. On Ollama failure an `error` result is still
+- **Reply routing:** the result body is `{ "id", "response", "model", "error" }`
+  (`content_type: application/json`). On Ollama failure an `error` result is still
   published so the caller never hangs.
+  - Request has `reply_to` (RPC style, incl. RabbitMQ direct reply-to
+    `amq.rabbitmq.reply-to`): the reply goes to the default exchange with
+    `routingKey == reply_to` and `correlation_id` copied from the request (falls back to
+    `id`). **No queue is declared** — the caller owns the reply destination. Publishes are
+    not `mandatory` and the channel has no publisher confirms, so a reply whose caller is
+    gone (timed out) is silently dropped by the broker.
+  - No `reply_to` (legacy): a durable queue named after the `id` is declared
+    (`x-expires` = request `timeout`) and the result is published there.
 - **Acking:** success and handled-error messages are acked. Malformed messages (bad JSON
   or missing id) are rejected without requeue. If publishing the result itself fails, the
   message is requeued.
@@ -219,6 +228,12 @@ Configure via the `ElasticApm` section (or `ELASTIC_APM_*` env vars):
   "TransactionSampleRate": 1.0,
   "Enabled": true        // set false to disable the agent entirely
 }
+```
+
+## Tests
+
+```bash
+dotnet test tests/OllamaProcessor.Tests
 ```
 
 ## Send a test message
